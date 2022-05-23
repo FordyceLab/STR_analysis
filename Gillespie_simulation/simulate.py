@@ -118,7 +118,7 @@ def simulate_tf_search(sim_T, max_T, y0, k_array, mfpt_only=False):
 	n = AVOGADROS_NUMBER
 	kLT, kTL, kTM, kTF, kMT, kFT = k_array
 
-	stored_data = False
+stored_data = False
 	first_passage = False
 	first_passage_time = -1
 	rxn = -1
@@ -147,15 +147,19 @@ def simulate_tf_search(sim_T, max_T, y0, k_array, mfpt_only=False):
 
 	while t < max_T:
 		# calculates likelihood of each reaction
-		aLT = kLT / (NUC_VOL*1e-15) / n * y[local_index] * y[dna_index]
+		room_on_dna = y[dna_index] > 0
+		room_on_motif = y[tf_motif_index] == 0
+		room_on_flank = y[tf_flank_index] < (y0[-1]-1)
+		aLT = kLT / (NUC_VOL*1e-15) / n * y[local_index] * room_on_dna
 		aTL = kTL * y[test_index]
-		aTM = kTM * y[test_index]
-		aTF = kTF * y[test_index]
+		aTM = kTM * y[test_index] * room_on_motif
+		aTF = kTF * y[test_index] * room_on_flank
 		aMT = kMT * y[tf_motif_index]
 		aFT = kFT * y[tf_flank_index]
 
 		# calculates tau
 		a = [aLT, aTL, aTM, aTF, aMT, aFT]
+		# print(a)
 		a_tot = np.sum(a)
 		tau = -np.log(np.random.rand()) / a_tot
 		t = t + tau
@@ -185,6 +189,7 @@ def simulate_tf_search(sim_T, max_T, y0, k_array, mfpt_only=False):
 
 		# updates sim_data
 		sim_data[i] = np.hstack([tau, t, y, rxn])
+		# print(tau, t, y, rxn)
 		i += 1
 
 		# stores data for the amount of simulation time (for calculating occupancy)
@@ -206,6 +211,153 @@ def simulate_tf_search(sim_T, max_T, y0, k_array, mfpt_only=False):
 	# returns an MFPT 10 times the maximum if it did not occur within maximum time
 	return sim_data_occ, max_T*10
 
+def compute_dna_occupied_intervals(sim_output):
+	# binarize output (occupied/not occupied)
+	dna_occupied = (sim_output[:-1,MOTIF_INDEX]+sim_output[:-1,FLANK_INDEX]+sim_output[:-1,TEST_INDEX])>0
+	# identify consecutive ranges of where bound
+	ranges = [list(group) for group in mit.consecutive_groups(np.where(dna_occupied)[0])]
+	return [sim_output[x[-1]+1,TIME_INDEX]-sim_output[x[0],TIME_INDEX] for x in ranges if len(x)>2]    
+
+# Gillespie simulation of TFsearch
+def simulate_tf_search_withtracking(sim_T, max_T, y0, k_array, mfpt_only=False):
+	# initialization
+	n = AVOGADROS_NUMBER
+	kLT, kTL, kTM, kTF, kMT, kFT = k_array
+
+	stored_data = False
+	first_passage = False
+	first_passage_time = -1
+	rxn = -1
+	t = 0
+	i = 1
+	y = y0.copy()
+	n_rows = 100000
+	sim_data = np.zeros((n_rows, len(y0) + 3))
+	sim_data[0] = np.hstack([0, t, y, rxn])
+	sim_data_occ = np.asarray(sim_data)
+	# create an array to track each of the TFs individually
+	TF_tracking = np.zeros((n_rows, y0[0]))
+
+	local_index = LOCAL_INDEX - 2
+	test_index = TEST_INDEX - 2
+	tf_motif_index = MOTIF_INDEX - 2
+	tf_flank_index = FLANK_INDEX - 2
+	dna_index = DNA_INDEX - 2
+
+	# maps a given reaction to how molecules should be updated (subtract from, add to)
+	a_mapping = [([local_index, dna_index], [test_index]),		# entering NS state
+				 ([test_index], [local_index, dna_index]),		# back to local state
+				 ([test_index], [tf_motif_index]),	# binding to motif
+				 ([test_index], [tf_flank_index]),	# binding to flanks
+				 ([tf_motif_index], [test_index]),	# unbinding from motif
+				 ([tf_flank_index], [test_index]),	# unbinding from flanks
+				 ]
+
+	while t < max_T:
+		# calculates likelihood of each reaction
+		room_on_dna = y[dna_index] > 0
+		room_on_motif = y[tf_motif_index] == 0
+		room_on_flank = y[tf_flank_index] < (y0[-1]-1)
+		aLT = kLT / (NUC_VOL*1e-15) / n * y[local_index] * room_on_dna
+		aTL = kTL * y[test_index]
+		aTM = kTM * y[test_index] * room_on_motif
+		aTF = kTF * y[test_index] * room_on_flank
+		aMT = kMT * y[tf_motif_index]
+		aFT = kFT * y[tf_flank_index]
+
+		# calculates tau
+		a = [aLT, aTL, aTM, aTF, aMT, aFT]
+		# print(a)
+		a_tot = np.sum(a)
+		tau = -np.log(np.random.rand()) / a_tot
+		t = t + tau
+
+		# chooses next reaction
+		rand = np.random.rand()
+		for j in range(len(a)):
+			if rand <= (np.sum(a[:j+1]) / a_tot):
+				rxn = j
+				# updates molecule counts
+				idx_from, idx_to = a_mapping[j]
+				for idx in idx_from:
+					y[idx] -= 1
+				for idx in idx_to:
+					y[idx] += 1
+				break
+				
+		# updates TF tracking
+		TF_tracking[i] = TF_tracking[i-1] # copy most recent state
+		if rxn == 0: # entering testing state
+			# choose one of the unbound TFs and move it to testing state
+			free_TFs = np.where(TF_tracking[i]==local_index)[0]
+			free_idx = np.random.choice(free_TFs)
+			TF_tracking[i,free_idx] = test_index
+		elif rxn == 1: # from testing to free state
+			# take the TF from the test state and move back to free state
+			testing_idx = np.where(TF_tracking[i]==test_index)[0][0]
+			TF_tracking[i,testing_idx] = local_index
+		elif rxn == 2: # from testing to motif state
+			# take the TF in the testing state and move to the motif
+			testing_idx = np.where(TF_tracking[i]==test_index)[0][0]
+			TF_tracking[i,testing_idx] = tf_motif_index
+		elif rxn == 3: # from testing to flank state
+			# take the TF in the testing state and move to the flanks
+			testing_idx = np.where(TF_tracking[i]==test_index)[0][0]
+			TF_tracking[i,testing_idx] = tf_flank_index
+		elif rxn == 4: # from motif to testing state
+			# take the TF in the motif state and move to the testing state
+			motif_idx = np.where(TF_tracking[i]==tf_motif_index)[0][0]
+			TF_tracking[i,motif_idx] = test_index
+		elif rxn == 5: # from flanks to testing state
+			# choose one of the TFs bound to the flanks and move it to testing state
+			flank_TFs = np.where(TF_tracking[i]==tf_flank_index)[0]
+			flank_idx = np.random.choice(flank_TFs)
+			TF_tracking[i,flank_idx] = test_index			
+
+		# checks to see if dna is bound for the first time
+		if (y[tf_motif_index] == 1 or y[tf_flank_index] == 1) and not first_passage:
+			first_passage_time = t
+			first_passage = True
+
+		# allocates more space if needed so that sim_data is not stored dynamically
+		if i >= n_rows:
+			sim_data = np.vstack((sim_data, np.zeros((n_rows, len(y0) + 3))))
+			TF_tracking = np.vstack((TF_tracking, np.zeros((n_rows, y0[0]))))
+			n_rows += n_rows
+			
+		# updates sim_data
+		sim_data[i] = np.hstack([tau, t, y, rxn])
+		# print(tau, t, y, rxn)
+		i += 1
+
+		# stores data for the amount of simulation time (for calculating occupancy)
+		if t >= sim_T and not stored_data:
+			sim_data_occ = np.asarray(sim_data)
+			sim_data_occ = sim_data_occ[:np.argmax(sim_data_occ[:, 1]) + 1, :]
+			stored_data = True
+
+		# returns if only mfpt is needed
+		if mfpt_only and first_passage:
+			sim_data_occ = np.asarray(sim_data)
+			sim_data_occ = sim_data_occ[:np.argmax(sim_data_occ[:, 1]) + 1, :]
+			return sim_data_occ, first_passage_time, TF_tracking
+
+		# returns if mfpt and simulation data is stored
+		if stored_data and first_passage:
+			return sim_data_occ, first_passage_time, TF_tracking
+
+	# returns an MFPT 10 times the maximum if it did not occur within maximum time
+	return sim_data_occ, max_T*10, TF_tracking
+
+
+def compute_dwell_times(TF_tracking, time_arr):
+	max_idx = len(time_arr)
+	# for each TF, find contiguous intervals on DNA
+	bound_times = []
+	for tf in range(len(TF_tracking[0])): # loop through every TF
+		tf_bound = [list(group) for group in mit.consecutive_groups(np.where(TF_tracking[:max_idx-1,tf])[0])]
+		bound_times.extend([time_arr[x[-1]+1]-time_arr[x[0]] for x in tf_bound if len(x)>2])
+	return bound_times
 
 # sensitivity analysis for number of TFs
 def n_tf_sensitivity(target, run_num, y0, factors):
@@ -373,11 +525,11 @@ def steady_state(target, y0):
 
 
 def compute_fraction_time_occupied(simulation_data, target_idx, target_idx_2=None):
-    target_data = simulation_data[:-1, target_idx]
-    if target_idx_2 is not None:
-        target_data = np.add(target_data, simulation_data[:-1, target_idx_2])
-    tot_occupied_time = np.sum(simulation_data[(np.where(target_data > 0)[0] + 1), DT_INDEX])
-    return tot_occupied_time/simulation_data[-1, TIME_INDEX]
+	target_data = simulation_data[:-1, target_idx]
+	if target_idx_2 is not None:
+		target_data = np.add(target_data, simulation_data[:-1, target_idx_2])
+	tot_occupied_time = np.sum(simulation_data[(np.where(target_data > 0)[0] + 1), DT_INDEX])
+	return tot_occupied_time/simulation_data[-1, TIME_INDEX]
 
 
 # computes the average occupancy of the target (or optionally two targets)
@@ -392,15 +544,15 @@ def compute_mean_occupancy(simulation_data, target_idx, target_idx_2=None):
 # saves simulation results to .npy files
 def save_output(target, run_num, first_passage, mean_occupancy_mot,
 				mean_occupancy_flanks, mean_occupancy_local):
-    np.save('simulation_output/' + target + '_sensitivity_first_passage_' + run_num + '.npy', first_passage)
-    np.save('simulation_output/' + target + '_sensitivity_mean_occupancy_mot_' + run_num + '.npy', mean_occupancy_mot)
-    np.save('simulation_output/' + target + '_sensitivity_mean_occupancy_flanks_' + run_num + '.npy', mean_occupancy_flanks)
-    np.save('simulation_output/' + target + '_sensitivity_mean_occupancy_local_' + run_num + '.npy', mean_occupancy_local)
+	np.save('simulation_output/' + target + '_sensitivity_first_passage_' + run_num + '.npy', first_passage)
+	np.save('simulation_output/' + target + '_sensitivity_mean_occupancy_mot_' + run_num + '.npy', mean_occupancy_mot)
+	np.save('simulation_output/' + target + '_sensitivity_mean_occupancy_flanks_' + run_num + '.npy', mean_occupancy_flanks)
+	np.save('simulation_output/' + target + '_sensitivity_mean_occupancy_local_' + run_num + '.npy', mean_occupancy_local)
 
 
 # creates storage variables for simulation results
 def initialize_storage(n_factors, n_var):
-    return np.zeros((n_factors, n_var)), np.zeros((n_factors, n_var)), np.zeros((n_factors, n_var)), np.zeros((n_factors, n_var))
+	return np.zeros((n_factors, n_var)), np.zeros((n_factors, n_var)), np.zeros((n_factors, n_var)), np.zeros((n_factors, n_var))
 
 
 # returns variables for sensitivity analyses
