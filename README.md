@@ -2,7 +2,7 @@
 
 Accompanying code for "Short tandem repeats recruit transcription factors to tune eukaryotic gene expression." Accompanying data for the study can be found at https://osf.io/gbxhz.
 
-Citation: COMING SOON
+bioRxiv preprint: https://doi.org/10.1101/2022.05.24.493321
 
 ### AffinityDistillation
 AffinityDistillation code can be found at `TBD`. MAX ChIP-seq Pho4 ChIP-nexus training data can be found at `TBD`.
