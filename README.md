@@ -2,10 +2,10 @@
 
 Accompanying code for "Short tandem repeats recruit transcription factors to tune eukaryotic gene expression." Accompanying data for the study can be found at https://osf.io/gbxhz.
 
-bioRxiv preprint: https://doi.org/10.1101/2022.05.24.493321
+bioRxiv preprint: https://doi.org/10.1101/2022.05.24.493321v2
 
-### AffinityDistillation
-AffinityDistillation code can be found at `TBD`. MAX ChIP-seq Pho4 ChIP-nexus training data can be found at `TBD`.
+### Affinity Distillation
+Affinity Distillation code can be found at https://github.com/kundajelab/affinity_distillation.
 
 ### Affinity predictions
 Here you can find a Jupyter notebook with code to predict binding with PSAMs, a sliding Z-score model, and a partition function-based model. Sample data to predict MAX and Pho4 binding to the sequences used in this work are provided in the repo.
